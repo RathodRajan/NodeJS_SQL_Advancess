@@ -1,0 +1,25 @@
+{
+  "name": "back_end",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "body-parser": "^1.20.2",
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "express-rate-limit": "^7.3.1",
+    "knex": "^3.1.0",
+    "mysql": "^2.18.1",
+    "mysql2": "^3.9.7",
+    "nodemon": "^3.1.0",
+    "stream": "^0.0.2"
+  }
+}

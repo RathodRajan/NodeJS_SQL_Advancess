@@ -1,0 +1,553 @@
+
+
+//  **************************   main file code ***************************************************************************
+
+
+
+const { Worker } = require('worker_threads');
+
+const db = require('../DB_Connection/DB_Connection');
+const { Readable } = require('stream');
+const process = require('process');
+const fs = require('fs');
+const path = require('path');
+
+
+async function streamFile(filePath, res) {
+    const readStream = await fs.createReadStream(filePath);
+
+    await readStream.on('open', async () => {
+        res.set('Content-Type', 'application/octet-stream');
+        res.set('Content-Disposition', `attachment; filename="${path.basename(filePath)}"`);
+        await readStream.pipe(res);
+    });
+
+    readStream.on('error', (err) => handleError(res, err));
+}
+
+const RegistrationUserInFormation = async (req, res) => {
+    try {
+        const pageFilePath = await path.join(__dirname, `./JsonFile/page${req.params.page}.json`);
+
+        if (fs.existsSync(pageFilePath)) {
+            console.log('File read =======================');
+
+            try {
+                // Creating a worker thread
+                const worker = new Worker(path.join(__dirname, './Worker/FileReadeWorker.js'), {
+                    workerData: { filePath: pageFilePath }
+                });
+
+                // Handling messages from worker thread
+                worker.on('message', async (msg) => {
+                    if (msg.chunk !== null) {
+                      return await  res.write(msg.chunk);
+                    } else {
+                        res.end();
+                    }
+                });
+
+                // Handling errors in worker thread
+                worker.on('error', (err) => {
+                    console.error('Worker thread error:', err);
+                    res.status(500).send('Internal Server Error');
+                });
+
+                // Handling worker thread exit
+                worker.on('exit', (code) => {
+                    if (code !== 0) {
+                        console.error(`Worker thread exited with code ${code}`);
+                        res.status(500).send('Internal Server Error');
+                    }
+                });
+            } catch (error) {
+                console.error('Error occurred while creating worker thread:', error);
+                console.log('file read catch =======================');
+                return streamFile(pageFilePath, res);
+            }
+
+        } 
+        else 
+        {
+
+            const page = parseInt(req.params.page) || 1; 
+            const pageSize = 3; 
+            const offset = await (page - 1) * pageSize;
+
+            const query = `SELECT * FROM \`reactcourd\` LIMIT ?, ?`;
+            const queryParams = [offset, pageSize];
+
+
+
+            const workerPath = await path.resolve(__dirname, './Worker/DBFatchSendDataWorker.js');
+            const worker =await new Worker(workerPath, { workerData: { query, queryParams, page, pageSize } });
+
+
+            worker.on('message', async (message) => {
+                if (message.error) {
+                    console.error('Error from worker:', message.error);
+                    res.status(500).json({ error: 'Internal server error' });
+                    worker.terminate();
+                    return;
+                }
+                if (message.chunk !== null) {
+                    return  await res.write(message.chunk);
+                } else {
+                    res.end(); // End the response once the stream is complete
+                }
+            });
+
+            worker.on('error', (error) => {
+                console.error('Worker error:', error);
+                res.status(500).json({ error: 'Internal server error' });
+            });
+
+            worker.on('exit', (code) => {
+                if (code !== 0) {
+                    console.error(`Worker stopped with exit code ${code}`);
+                    res.status(500).json({ error: 'Internal server error' });
+                }
+            });
+
+          await  worker.postMessage({ type: 'stream' });
+        }
+    } catch (error) {
+        console.error('Error:', error);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+};
+
+
+//  ---------------------    dada reade worker file code  -------------------------------
+
+
+
+const { parentPort, workerData } = require('worker_threads');
+const path = require('path');
+const db = require('../../DB_Connection/DB_Connection');
+
+const { Readable } = require('stream');
+
+parentPort.on('message', async (message) => {
+  if (message.type === 'stream') {
+    const { query, queryParams } = workerData;
+
+    const readable = new Readable({
+      objectMode: true,
+      read() { } // No need to implement read as data is pushed manually
+    });
+
+    readable.push('[');
+    let isFirstRow = true;
+    await db.query(query, queryParams).stream()
+      .on('error', (err) => {
+        console.error('Error executing the query:', err);
+        parentPort.postMessage({ error: 'Internal server error' });
+        readable.destroy(err);
+      })
+      .on('data', async (row) => {
+        if (!isFirstRow) {
+          readable.push(',\n');
+        }
+        readable.push('{');
+        const columns = Object.keys(row);
+        columns.forEach(async (col, index) => {
+          if (index > 0) {
+            readable.push(',');
+          }
+        await readable.push(`"${col}":${JSON.stringify(row[col])}`);
+        });
+        readable.push('}');
+        isFirstRow = false;
+      })
+      .on('end', () => {
+        readable.push(']');
+        readable.push(null);
+        console.log('All rows have been streamed.');
+      });
+
+    // Forward data chunks and end signal to the main thread
+    readable.on('data', async (chunk) => {
+      await parentPort.postMessage({ chunk: chunk.toString() });
+    });
+
+    readable.on('end', () => {
+      parentPort.postMessage({ chunk: null });
+    });
+  }
+});
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/*  ******************** get Dat Row insid Columns by Streaming data pass ********************    */
+
+
+
+// const db = require('../DB_Connection/DB_Connection');
+// const { Readable } = require('stream');
+// const process = require('process');
+// const fs = require('fs');
+// const path = require('path');
+
+
+// async function streamFile(filePath, res) {
+//     const readStream = await fs.createReadStream(filePath);
+
+//     await readStream.on('open', async () => {
+//         res.set('Content-Type', 'application/octet-stream');
+//         res.set('Content-Disposition', `attachment; filename="${path.basename(filePath)}"`);
+//        await readStream.pipe(res);
+//     });
+
+//      readStream.on('error', (err) => handleError(res, err));
+// }
+
+// const RegistrationUserInFormation = async (req, res) => {
+//     try {
+//         const pageFilePath = path.join(__dirname, `page${req.params.page}.json`);
+
+//         if (fs.existsSync(pageFilePath)) {
+//             console.log('file read =======================')
+//             return streamFile(pageFilePath, res);
+
+//         } else {
+//             console.log('file create and rade =========================')
+//             const page = parseInt(req.params.page) || 1;
+//             const pageSize = 20;
+//             const offset = (page - 1) * pageSize;
+
+//             const query = `SELECT * FROM \`reactcourd\` LIMIT ?, ?`;
+//             const queryParams = [offset, pageSize];
+
+//             const readable = new Readable({
+//                 read() {} // This is a no-op since we're pushing data manually
+//             });
+
+//             let isFirstRow = true;
+//             readable.push('[');
+
+//             db.query(query, queryParams).stream().on('error', (err) => {
+//                 console.error('Error executing the query:', err);
+//                 if (!res.headersSent) {
+//                     res.status(500).json({ error: 'Internal server error' });
+//                 }
+//                 readable.destroy(err);
+//             }).on('data', async (row) => {
+//                     if (!isFirstRow) {
+//                         readable.push(',\n');
+//                     }
+//                      readable.push('{');
+//                     const columns =  Object.keys(row);
+//                     columns.forEach(async (col, index) => {
+//                         if (index > 0) {
+//                             readable.push(',');
+//                         }
+//                         await readable.push(`"${col}":${JSON.stringify(row[col])}`);
+//                     });
+//                     readable.push('}');
+//                     isFirstRow = false;
+//                 })
+//                 .on('end', async () => {
+//                    readable.push(']');
+//                     readable.push(null);
+//                     console.log('All rows have been streamed.');
+
+//                     // Write to the file
+//                     const writeStream =  fs.createWriteStream(pageFilePath);
+//                     readable.pipe(writeStream).on('finish', async () => {
+//                         console.log(`File ${pageFilePath} has been created.`);
+//                         // Once writing is finished, return the file as response
+//                         const readStream =  fs.createReadStream(pageFilePath);
+//                         readStream.on('error', (err) => handleError(res, err));
+//                         return  await readStream.pipe(res);
+//                     });
+//                 });
+
+//             readable.on('error', (err) => {
+//                 console.error('Readable stream error:', err);
+//                 if (!res.headersSent) {
+//                     res.status(500).json({ error: 'Internal server error' });
+//                 }
+//             });
+//         }
+//     } catch (error) {
+//         handleError(res, error);
+//     }
+// };
+
+// function handleError(res, error) {
+//     console.error(error);
+//     if (!res.headersSent) {
+//         res.status(500).json({ error: 'Internal server error' });
+//     }
+// }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/*  ******************** get Dat Row wise Streaming ********************    */
+
+
+
+/*const db = require('../DB_Connection/DB_Connection');
+const { Readable } = require('stream');
+
+const RegistrationUserInFormation = async (req, res) => {
+    console.log('RegistrationUserInformation');
+    try {
+        console.log(req.params.page)
+        const page = parseInt(req.params.page) || 1; // Parse page number from request parameters
+        const pageSize = 5; // Number of rows per page
+
+        // Calculate the OFFSET based on the page number
+        const offset = (page - 1) * pageSize;
+
+        const query = `SELECT * FROM \`reactcourd\` LIMIT ?, ?`;
+        const queryParams = [offset, pageSize];
+
+
+
+        const readable = new Readable({
+            objectMode: true,
+            read() { }
+        });
+
+        // Start the JSON array with an opening bracket
+        readable.push('[');
+        let isFirst = true; // Flag to check if it's the first row
+        db.query(query, queryParams).stream()
+            .on('error', (err) => {
+                console.error('Error executing the query:', err);
+                res.status(500).json({ error: 'Internal server error' });
+                readable.destroy(err); // Destroy the readable stream to stop further processing
+            })
+            .on('data', (row) => {
+                // console.log(row);
+                // If it's not the first row, add a comma before the new row
+                if (!isFirst) {
+                    readable.push(',\n');
+                }
+                readable.push(JSON.stringify(row)); // Push the JSON object
+                isFirst = false; // Update the flag
+            })
+            .on('end', () => {
+                // End the JSON array with a closing bracket
+                readable.push(']');
+                readable.push(null); // End the stream
+                console.log('All rows have been streamed.');
+            });
+
+
+        readable.pipe(res);
+
+    } catch (error) {
+        console.error('Error:', error);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+};*/
+
+
+
+
+
+
+
+
+
+
+/*  ******************** get Dat Row insid Columns by Streaming data pass ********************    */
+
+
+/*
+const db = require('../DB_Connection/DB_Connection');
+const { Readable } = require('stream');
+const process = require('process');
+
+// Define RegistrationUserInFormation function before it's used
+const RegistrationUserInFormation = async (req, res) => {
+    console.log('RegistrationUserInFormation');
+    console.log(`Primary ${process.pid} is running`);
+    try {
+
+        console.log(req.params.page)
+        const page = parseInt(req.params.page) || 1  ; // Parse page number from request parameters
+        const pageSize = 10; // Number of rows per page
+
+        // Calculate the OFFSET based on the page number
+        const offset = (page - 1) * pageSize;
+
+        const query = `SELECT * FROM \`reactcourd\` LIMIT ?, ?`;
+        const queryParams = [offset, pageSize];
+
+        const readable = new Readable({
+            read() {} // This is a no-op since we're pushing data manually
+        });
+
+        let isFirstRow = true;
+
+        readable.push('[');
+
+        db.query(query, queryParams).stream().on('error', (err) => {
+            console.error('Error executing the query:', err);
+            if (!res.headersSent) {
+                res.status(500).json({ error: 'Internal server error' });
+            }
+            readable.destroy(err);
+        })
+            .on('data', (row) => {
+                if (!isFirstRow) {
+                    readable.push(',\n');
+                }
+
+                readable.push('{');
+                const columns = Object.keys(row);
+                columns.forEach((col, index) => {
+                    if (index > 0) {
+                        readable.push(',');
+                    }
+                    readable.push(`"${col}":${JSON.stringify(row[col])}`);
+                });
+                readable.push('}');
+
+                isFirstRow = false;
+            })
+            .on('end', () => {
+                readable.push(']');
+                readable.push(null);
+                console.log('All rows have been streamed.');
+            });
+
+        readable.pipe(res);
+
+        readable.on('error', (err) => {
+            console.error('Readable stream error:', err);
+            if (!res.headersSent) {
+                res.status(500).json({ error: 'Internal server error' });
+            }
+        });
+
+    } catch (error) {
+        console.error('Error:', error);
+        if (!res.headersSent) {
+            res.status(500).json({ error: 'Internal server error' });
+        }
+    }
+};*/
+
+
+
+
+
+
+
+
+// const db = require('../DB_Connection/DB_Connection')
+
+// //   ********  get  *********
+// const RegistrationUserInFormation = async (req, res) => {
+//     console.log('RegistrationUserInFormation');
+//     const results = await new Promise((resolve, reject) => {
+//         try {
+//             db.query('SELECT * FROM`reactcourd` ', (error, results) => {
+//                 if (error) {
+//                     console.error('get method query error :', error);
+//                     reject(error);
+//                 } else {
+//                     resolve(results);
+//                 }
+//             });
+//         } catch (error) {
+//             console.log('get method catch error ', error);
+//         }
+//     });
+
+//     // Return the fetched data as JSON response
+//     // console.log(results);
+//     return res.json(results);
+// }
+
+
+----------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+// const { Worker } = require('worker_threads');
+// const path = require('path');
+
+// const RegistrationUserInFormation = async (req, res) => {
+//     console.log('RegistrationUserInformation');
+
+//     try {
+
+//         const page = parseInt(req.params.page) || 1; // Parse page number from request parameters
+//         const pageSize = 5; // Number of rows per page
+
+//         // Calculate the OFFSET based on the page number
+//         const offset = (page - 1) * pageSize;
+
+//         const query = `SELECT * FROM \`reactcourd\` LIMIT ?, ?`;
+//         const queryParams = [offset, pageSize];
+
+
+
+//         const workerPath = path.resolve(__dirname, './worker.js');
+//         const worker = new Worker(workerPath, { workerData: { query, queryParams, page, pageSize } });
+
+//         res.writeHead(200, { 'Content-Type': 'application/json' });
+
+//         worker.on('message', (message) => {
+//             if (message.error) {
+//                 console.error('Error from worker:', message.error);
+//                 res.status(500).json({ error: 'Internal server error' });
+//                 worker.terminate();
+//                 return;
+//             }
+//             if (message.chunk !== null) {
+//                 res.write(message.chunk);
+//             } else {
+//                 res.end(); // End the response once the stream is complete
+//             }
+//         });
+
+//         worker.on('error', (error) => {
+//             console.error('Worker error:', error);
+//             res.status(500).json({ error: 'Internal server error' });
+//         });
+
+//         worker.on('exit', (code) => {
+//             if (code !== 0) {
+//                 console.error(`Worker stopped with exit code ${code}`);
+//                 res.status(500).json({ error: 'Internal server error' });
+//             }
+//         });
+
+//         worker.postMessage({ type: 'stream' }); 
+
+//     } catch (error) {
+//         console.error('Error:', error);
+//         res.status(500).json({ error: 'Internal server error' });
+//     }
+// };
